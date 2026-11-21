@@ -1,0 +1,590 @@
+import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { request as httpsRequest, createServer as httpsCreateServer } from 'node:https'
+import type { TLSSocket } from 'node:tls'
+import type { Socket, AddressInfo } from 'node:net'
+import { WebSocketServer, WebSocket, type RawData } from 'ws'
+import { HeartbeatMonitor, BackpressurePolicy, BackpressureAction, TransportCloseCode } from '@pragmatic-tech-ai/pragmatic-protocol'
+import { type WsResilienceConfig, HealthEndpoint, MachineTls, type ClientTlsMaterial, type MachineTlsRef, MachineCertIdentity, MachineFingerprintHeader, RateLimitGuard, RateLimitScope, AuditSurface, type Observability, RequestCorrelation, DrainController, type IInFlightSource, type WebSocketAddress, type IWorkerRouter, type WorkerEndpoint } from '@pragmatic-tech-ai/pragmatic-env-cluster'
+import { WorkerTlsName } from './worker-tls-name.js'
+import { NullLogger, type ILogger } from '@pragmatic-tech-ai/pragmatic-observability'
+
+export interface GatewayOptions
+{
+    host?: string
+    port: number
+    router: IWorkerRouter
+    tls: MachineTlsRef
+    clientTls?: MachineTlsRef
+    serverName?: string
+    logger?: ILogger
+    rateLimit?: RateLimitGuard
+    observability?: Observability
+    drainTimeoutMs?: number
+    wsResilience?: WsResilienceConfig
+}
+
+/** Public plain-ws front door. Holds NO identity pack and never parses JSON-RPC: it reads the ?environment hint,
+ *  dials the worker over mutual-TLS wss (forwarding environment + bearer), and relays raw frames both ways.
+ *  The client-side upgrade completes only after the worker ws opens, so a worker rejection rejects the client. */
+export class Gateway
+{
+    private static readonly DefaultHost = '127.0.0.1'
+    private static readonly UpgradeEvent = 'upgrade'
+    private static readonly RequestEvent = 'request'
+    private static readonly MessageEvent = 'message'
+    private static readonly OpenEvent = 'open'
+    private static readonly CloseEvent = 'close'
+    private static readonly ErrorEvent = 'error'
+    private static readonly ListeningEvent = 'listening'
+    private static readonly AuthorizationHeader = 'authorization'
+    private static readonly EnvironmentHeader = 'x-pragmatic-environment'
+    private static readonly EnvironmentParam = 'environment'
+    private static readonly BaseUrl = 'http://localhost'
+    private static readonly DefaultServerName = '127.0.0.1'
+    private static readonly ContentTypeHeader = 'content-type'
+    private static readonly TextPlain = 'text/plain'
+    private static readonly WsScheme = 'wss://'
+    private static readonly UnauthorizedResponse = 'HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'
+    private static readonly BadGatewayStatus = 502
+    private static readonly BadRequestStatus = 400
+    private static readonly EnvironmentPattern = /^[A-Za-z0-9._-]+$/
+    private static readonly ServiceUnavailableResponse = 'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n'
+    private static readonly DrainBeginEvent = 'drain-begin'
+    private static readonly DrainCompleteEvent = 'drain-complete'
+    private static readonly DrainFailedEvent = 'drain-failed'
+    private static readonly EventKey = 'event'
+    private static readonly ShedLine = 'ws shed'
+    private static readonly ShedEvent = 'ws-shed'
+    private static readonly InFlightField = 'inFlight'
+    private static readonly RemainingField = 'remaining'
+    private static readonly ElapsedField = 'elapsedMs'
+    private static readonly DrainedField = 'drained'
+    private static readonly StepField = 'step'
+    private static readonly DrainBeginLine = 'drain begin'
+    private static readonly DrainCompleteLine = 'drain complete'
+    private static readonly DrainFailedLine = 'drain step failed'
+    private static readonly StepReadiness = 'readiness-close'
+    private static readonly StepWait = 'in-flight-wait'
+    private static readonly DefaultWsResilience: WsResilienceConfig = { heartbeatIntervalMs: 30000, readIdleMs: 60000, backpressureSoftBytes: 1048576, backpressureHardBytes: 8388608, backpressureGraceMs: 5000, maxInboundBytes: 16777216 }
+    private static readonly StepHeartbeat = 'heartbeat-stop'
+    private static readonly StepWorkerSockets = 'terminate-worker-sockets'
+    private static readonly StepTerminate = 'terminate-clients'
+    private static readonly StepWss = 'close-wss'
+    private static readonly StepHttp = 'close-http'
+    private static readonly StepObservability = 'observability-shutdown'
+    private static readonly DefaultDrainTimeoutMs = 0
+
+    private readonly httpServer: HttpServer
+    private readonly wss: WebSocketServer
+    private readonly router: IWorkerRouter
+    private readonly clientTls: ClientTlsMaterial
+    private readonly address: WebSocketAddress
+    private readonly machineTlsConfigured: boolean
+    private readonly workerSockets = new Set<WebSocket>()
+    private readonly serverName: string
+    private readonly logger: ILogger
+    private readonly rateLimit: RateLimitGuard
+    private readonly health = new HealthEndpoint()
+    private readonly observability: Observability | undefined
+    private readonly drainTimeoutMs: number
+    private readonly wsResilience: WsResilienceConfig
+    private readonly heartbeat: HeartbeatMonitor
+    private readonly backpressure: BackpressurePolicy
+    private drainSource: IInFlightSource | undefined
+    private drainController: DrainController | undefined
+    private disposing: Promise<void> | undefined
+    private ready = true
+    private disposed = false
+
+    private constructor(httpServer: HttpServer, wss: WebSocketServer, router: IWorkerRouter, clientTls: ClientTlsMaterial, address: WebSocketAddress, serverName: string, machineTlsConfigured: boolean, logger: ILogger, rateLimit: RateLimitGuard = new RateLimitGuard(), observability?: Observability, drainTimeoutMs: number = Gateway.DefaultDrainTimeoutMs, resilience: WsResilienceConfig = Gateway.DefaultWsResilience)
+    {
+        this.wsResilience = resilience
+        this.backpressure = new BackpressurePolicy(resilience.backpressureSoftBytes, resilience.backpressureHardBytes, resilience.backpressureGraceMs)
+        this.heartbeat = new HeartbeatMonitor(resilience.heartbeatIntervalMs)
+        this.heartbeat.Start()
+        this.observability = observability
+        this.drainTimeoutMs = drainTimeoutMs
+        this.rateLimit = rateLimit
+        this.logger = logger
+        this.machineTlsConfigured = machineTlsConfigured
+        this.httpServer = httpServer
+        this.wss = wss
+        this.router = router
+        this.clientTls = clientTls
+        this.address = address
+        this.serverName = serverName
+        httpServer.on(Gateway.UpgradeEvent, (req: IncomingMessage, socket: Socket, head: Buffer) =>
+        {
+            socket.on(Gateway.ErrorEvent, () => socket.destroy())
+            void this.Upgrade(req, socket, head)
+        })
+        httpServer.on(Gateway.RequestEvent, (req: IncomingMessage, res: ServerResponse) =>
+        {
+            void this.Request(req, res)
+        })
+    }
+
+    public static async StartAsync(options: GatewayOptions): Promise<Gateway>
+    {
+        const host = options.host ?? Gateway.DefaultHost
+        const httpServer: HttpServer = options.clientTls ? httpsCreateServer(MachineTls.OptionalServer(options.clientTls)) : createServer()
+        const resilience = options.wsResilience ?? Gateway.DefaultWsResilience
+        const wss = new WebSocketServer({ noServer: true, maxPayload: resilience.maxInboundBytes })
+        await new Promise<void>((resolve, reject) =>
+        {
+            httpServer.once(Gateway.ListeningEvent, () => resolve())
+            httpServer.once(Gateway.ErrorEvent, reject)
+            httpServer.listen(options.port, host)
+        })
+        const resolved = httpServer.address() as AddressInfo
+        const clientTls = MachineTls.Client(options.tls)
+        return new Gateway(httpServer, wss, options.router, clientTls, { host, port: resolved.port }, options.serverName ?? Gateway.DefaultServerName, options.clientTls !== undefined, options.logger ?? new NullLogger(), options.rateLimit, options.observability, options.drainTimeoutMs ?? Gateway.DefaultDrainTimeoutMs, resilience)
+    }
+
+    /** Anti-spoof: ALWAYS strips any inbound fingerprint header, then stamps the verified peer-cert fingerprint only when client TLS is configured and the peer was authorized. */
+    public static StampMachineFingerprint(headers: Record<string, string | string[] | undefined>, socket: TLSSocket, clientTlsConfigured: boolean): void
+    {
+        delete headers[MachineFingerprintHeader]
+        if (clientTlsConfigured && socket.authorized === true)
+        {
+            headers[MachineFingerprintHeader] = MachineCertIdentity.FromPeerCertificate(true, socket.getPeerCertificate()).Fingerprint
+        }
+    }
+
+    /** Builds the outbound worker-upgrade carrier: environment, authorization, anti-spoof fingerprint stamp, and the inbound W3C trace context. */
+    public static OutboundHeaders(req: IncomingMessage, environmentId: string, authorization: string | null, clientTlsConfigured: boolean): Record<string, string>
+    {
+        const headers: Record<string, string> = { [Gateway.EnvironmentHeader]: environmentId }
+        if (authorization !== null)
+        {
+            headers[Gateway.AuthorizationHeader] = authorization
+        }
+        Gateway.StampMachineFingerprint(headers, req.socket as TLSSocket, clientTlsConfigured)
+        RequestCorrelation.Inject(RequestCorrelation.Extract(req.headers), headers)
+        return headers
+    }
+
+    public HeartbeatCountForTest(): number
+    {
+        return this.heartbeat.WatchedCountForTest()
+    }
+
+    public ClientCountForTest(): number
+    {
+        return this.wss.clients.size
+    }
+
+    public Address(): WebSocketAddress
+    {
+        return this.address
+    }
+
+    /** Test seam: override the in-flight source the drain waits on (default: the live client-connection count). */
+    public SetDrainSourceForTest(source: IInFlightSource): void
+    {
+        this.drainSource = source
+    }
+
+    /** Test seam: inject the drain controller (clock/sleep) so the bounded wait is deterministic. */
+    public SetDrainControllerForTest(controller: DrainController): void
+    {
+        this.drainController = controller
+    }
+
+    public DisposeAsync(): Promise<void>
+    {
+        this.disposing ??= this.DoDispose()
+        return this.disposing
+    }
+
+    private async DoDispose(): Promise<void>
+    {
+        this.ready = false
+        this.disposed = true
+        await this.Step(Gateway.StepReadiness, () => this.httpServer.closeIdleConnections())
+        const drained = await this.Drain()
+        await this.Step(Gateway.StepHeartbeat, () => this.heartbeat.Stop())
+        await this.Step(Gateway.StepWorkerSockets, () =>
+        {
+            for (const workerWs of this.workerSockets)
+            {
+                workerWs.terminate()
+            }
+            this.workerSockets.clear()
+        })
+        await this.Step(Gateway.StepTerminate, () =>
+        {
+            for (const client of this.wss.clients)
+            {
+                client.terminate()
+            }
+        })
+        await this.Step(Gateway.StepWss, () => new Promise<void>(resolve => this.wss.close(() => resolve())))
+        await this.Step(Gateway.StepHttp, () =>
+        {
+            const closed = new Promise<void>(resolve => this.httpServer.close(() => resolve()))
+            this.httpServer.closeIdleConnections()
+            if (!drained)
+            {
+                this.httpServer.closeAllConnections()
+            }
+            return closed
+        })
+        await this.Step(Gateway.StepObservability, async () =>
+        {
+            await this.observability?.Shutdown()
+        })
+    }
+
+    /** Runs one teardown step; a throw is logged (step name only, no secrets) and never skips the remaining steps. */
+    private async Step(name: string, action: () => void | Promise<void>): Promise<void>
+    {
+        try
+        {
+            await action()
+        }
+        catch
+        {
+            this.logger.Warn(Gateway.DrainFailedLine, { [Gateway.EventKey]: Gateway.DrainFailedEvent, [Gateway.StepField]: name })
+        }
+    }
+
+    /** Degrade-safe in-flight read for the begin log: a throwing source counts as zero, matching DrainController. */
+    private CountOf(source: IInFlightSource): number
+    {
+        try
+        {
+            return source.InFlight()
+        }
+        catch
+        {
+            return 0
+        }
+    }
+
+    /** Bounded wait for bridged sessions; the gateway has no request instrumentation, so in-flight is the live client-socket count. */
+    private async Drain(): Promise<boolean>
+    {
+        try
+        {
+            const source = this.drainSource ?? { InFlight: () => this.wss.clients.size }
+            this.logger.Info(Gateway.DrainBeginLine, { [Gateway.EventKey]: Gateway.DrainBeginEvent, [Gateway.InFlightField]: this.CountOf(source) })
+            const controller = this.drainController ?? new DrainController(this.drainTimeoutMs)
+            const outcome = await controller.WaitForDrain(source)
+            this.logger.Info(Gateway.DrainCompleteLine, { [Gateway.EventKey]: Gateway.DrainCompleteEvent, [Gateway.DrainedField]: outcome.Drained, [Gateway.RemainingField]: outcome.Remaining, [Gateway.ElapsedField]: outcome.ElapsedMs })
+            return outcome.Drained
+        }
+        catch
+        {
+            this.logger.Warn(Gateway.DrainFailedLine, { [Gateway.EventKey]: Gateway.DrainFailedEvent, [Gateway.StepField]: Gateway.StepWait })
+            return false
+        }
+    }
+
+    /** A worker dial that never opened: 503 retryable during drain (our own teardown), else the normal 401. */
+    private RejectUnopened(socket: Socket): void
+    {
+        if (this.disposed)
+        {
+            this.RejectRetryable(socket)
+        }
+        else
+        {
+            this.Reject(socket)
+        }
+    }
+
+    private RejectRetryable(socket: Socket): void
+    {
+        if (!socket.writableEnded && !socket.destroyed)
+        {
+            socket.write(Gateway.ServiceUnavailableResponse)
+        }
+        socket.destroy()
+    }
+
+    private async Upgrade(req: IncomingMessage, socket: Socket, head: Buffer): Promise<void>
+    {
+        if (this.disposed)
+        {
+            this.RejectRetryable(socket)
+            return
+        }
+        try
+        {
+            const environmentId = this.EnvironmentHint(req)
+            if (environmentId === null)
+            {
+                this.Reject(socket)
+                return
+            }
+            const limit = this.rateLimit.Check(
+                { scope: RateLimitScope.Environment, environment: environmentId, key: environmentId },
+                { surface: AuditSurface.Upgrade, environment: environmentId, methodOrPath: RateLimitGuard.UpgradeMethodName() })
+            if (!limit.Allowed)
+            {
+                this.RejectRateLimited(socket, limit.RetryAfterMs)
+                return
+            }
+            let endpoint: WorkerEndpoint
+            try
+            {
+                endpoint = await this.router.RouteOrSpawn(environmentId)
+            }
+            catch
+            {
+                this.Reject(socket)
+                return
+            }
+            if (this.disposed)
+            {
+                this.RejectRetryable(socket)
+                return
+            }
+            this.Dial(req, socket, head, environmentId, endpoint, this.AuthorizationOf(req))
+        }
+        catch
+        {
+            this.Reject(socket)
+        }
+    }
+
+    private Dial(req: IncomingMessage, socket: Socket, head: Buffer, environmentId: string, endpoint: WorkerEndpoint, authorization: string | null): void
+    {
+        const client = this.clientTls
+        const headers = Gateway.OutboundHeaders(req, environmentId, authorization, this.machineTlsConfigured)
+        const wsOptions = { key: client.key, cert: client.cert, ca: client.ca, rejectUnauthorized: true, ...WorkerTlsName.OptionsFor(this.serverName), headers }
+        const workerWs = new WebSocket(`${Gateway.WsScheme}${endpoint.host}:${endpoint.port}/`, wsOptions)
+        this.workerSockets.add(workerWs)
+        let opened = false
+        let bridged = false
+        workerWs.once(Gateway.OpenEvent, () =>
+        {
+            opened = true
+            if (this.disposed)
+            {
+                workerWs.terminate()
+                this.RejectRetryable(socket)
+                return
+            }
+            this.heartbeat.Watch(workerWs)
+            this.wss.handleUpgrade(req, socket, head, (clientWs: WebSocket) =>
+            {
+                bridged = true
+                this.heartbeat.Watch(clientWs)
+                this.Bridge(clientWs, workerWs)
+            })
+        })
+        workerWs.once(Gateway.ErrorEvent, () =>
+        {
+            this.workerSockets.delete(workerWs)
+            if (!opened)
+            {
+                this.RejectUnopened(socket)
+            }
+        })
+        workerWs.once(Gateway.CloseEvent, () =>
+        {
+            this.workerSockets.delete(workerWs)
+            if (!opened)
+            {
+                this.RejectUnopened(socket)
+            }
+        })
+        socket.on(Gateway.ErrorEvent, () => workerWs.terminate())
+        socket.on(Gateway.CloseEvent, () =>
+        {
+            if (!bridged)
+            {
+                this.workerSockets.delete(workerWs)
+                workerWs.terminate()
+            }
+        })
+    }
+
+    private Bridge(clientWs: WebSocket, workerWs: WebSocket): void
+    {
+        let workerOverSince: number | undefined
+        let clientOverSince: number | undefined
+        clientWs.on(Gateway.MessageEvent, (data: RawData, isBinary: boolean) =>
+        {
+            workerOverSince = this.Forward(workerWs, data, isBinary, workerOverSince)
+        })
+        workerWs.on(Gateway.MessageEvent, (data: RawData, isBinary: boolean) =>
+        {
+            clientOverSince = this.Forward(clientWs, data, isBinary, clientOverSince)
+        })
+        clientWs.on(Gateway.CloseEvent, () =>
+        {
+            this.workerSockets.delete(workerWs)
+            this.CloseSafe(workerWs)
+        })
+        workerWs.on(Gateway.CloseEvent, () => this.CloseSafe(clientWs))
+        clientWs.on(Gateway.ErrorEvent, () =>
+        {
+            this.workerSockets.delete(workerWs)
+            workerWs.terminate()
+        })
+        workerWs.on(Gateway.ErrorEvent, () => clientWs.terminate())
+    }
+
+    /** Forwards one frame to `dest`; if `dest`'s outbound buffer stays over the hard limit past the grace window, sheds `dest`
+     *  (close 1013 + terminate) and stops forwarding to it. Returns the updated over-hard timestamp for this leg. */
+    private Forward(dest: WebSocket, data: RawData, isBinary: boolean, overSince: number | undefined): number | undefined
+    {
+        if (dest.readyState !== WebSocket.OPEN)
+        {
+            return overSince
+        }
+        const assessment = this.backpressure.Assess(dest.bufferedAmount, overSince, Date.now())
+        if (assessment.action === BackpressureAction.Shed)
+        {
+            this.workerSockets.delete(dest)
+            this.logger.Info(Gateway.ShedLine, { [Gateway.EventKey]: Gateway.ShedEvent })
+            dest.close(TransportCloseCode.TryAgainLater)
+            dest.terminate()
+            return assessment.overHardSince
+        }
+        dest.send(data, { binary: isBinary })
+        return assessment.overHardSince
+    }
+
+    /** @internal test seam */
+    public BridgeForTest(clientWs: WebSocket, workerWs: WebSocket): void
+    {
+        this.workerSockets.add(workerWs)
+        this.Bridge(clientWs, workerWs)
+    }
+
+    /** @internal test seam */
+    public WorkerSocketCountForTest(): number
+    {
+        return this.workerSockets.size
+    }
+
+    private CloseSafe(ws: WebSocket): void
+    {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+        {
+            ws.close()
+        }
+    }
+
+    private async Request(req: IncomingMessage, res: ServerResponse): Promise<void>
+    {
+        try
+        {
+            const healthUrl = new URL(req.url ?? '/', Gateway.BaseUrl)
+            const health = this.health.Handle(req.method ?? '', healthUrl.pathname, this.ready)
+            if (health !== null)
+            {
+                res.writeHead(health.status, { [Gateway.ContentTypeHeader]: Gateway.TextPlain })
+                res.end(health.body)
+                return
+            }
+            const environmentId = this.EnvironmentHint(req)
+            if (environmentId === null)
+            {
+                res.writeHead(Gateway.BadRequestStatus)
+                res.end()
+                return
+            }
+            let endpoint: WorkerEndpoint
+            try
+            {
+                endpoint = await this.router.RouteOrSpawn(environmentId)
+            }
+            catch
+            {
+                res.writeHead(Gateway.BadGatewayStatus)
+                res.end()
+                return
+            }
+            const client = this.clientTls
+            const headers: Record<string, string | string[] | undefined> = { ...req.headers, [Gateway.EnvironmentHeader]: environmentId }
+            Gateway.StampMachineFingerprint(headers, req.socket as TLSSocket, this.machineTlsConfigured)
+            const proxied = httpsRequest(
+                { host: endpoint.host, port: endpoint.port, method: req.method, path: req.url, headers, key: client.key, cert: client.cert, ca: client.ca, rejectUnauthorized: true, ...WorkerTlsName.OptionsFor(this.serverName) },
+                upstream =>
+                {
+                    upstream.on(Gateway.ErrorEvent, () =>
+                    {
+                        if (!res.headersSent && !res.writableEnded)
+                        {
+                            res.writeHead(Gateway.BadGatewayStatus)
+                            res.end()
+                        }
+                        else
+                        {
+                            res.destroy()
+                        }
+                    })
+                    res.writeHead(upstream.statusCode ?? Gateway.BadGatewayStatus, upstream.headers)
+                    upstream.pipe(res)
+                })
+            proxied.on(Gateway.ErrorEvent, () =>
+            {
+                if (!res.headersSent && !res.writableEnded)
+                {
+                    res.writeHead(Gateway.BadGatewayStatus)
+                    res.end()
+                }
+            })
+            req.on(Gateway.ErrorEvent, () => proxied.destroy())
+            res.on(Gateway.ErrorEvent, () => proxied.destroy())
+            res.on(Gateway.CloseEvent, () => proxied.destroy())
+            req.pipe(proxied)
+        }
+        catch
+        {
+            if (!res.headersSent && !res.writableEnded)
+            {
+                res.writeHead(Gateway.BadGatewayStatus)
+                res.end()
+            }
+        }
+    }
+
+    private AuthorizationOf(req: IncomingMessage): string | null
+    {
+        const header = req.headers[Gateway.AuthorizationHeader]
+        return typeof header === 'string' ? header : null
+    }
+
+    private EnvironmentHint(req: IncomingMessage): string | null
+    {
+        let environment: string | null
+        try
+        {
+            const url = new URL(req.url ?? '/', Gateway.BaseUrl)
+            environment = url.searchParams.get(Gateway.EnvironmentParam)
+        }
+        catch
+        {
+            return null
+        }
+        if (environment === null || environment.length === 0 || !Gateway.EnvironmentPattern.test(environment))
+        {
+            return null
+        }
+        return environment
+    }
+
+    private RejectRateLimited(socket: Socket, retryAfterMs: number): void
+    {
+        if (!socket.writableEnded && !socket.destroyed)
+        {
+            socket.write(RateLimitGuard.TooManyRequestsResponse(retryAfterMs))
+        }
+        socket.destroy()
+    }
+
+    private Reject(socket: Socket): void
+    {
+        if (!socket.writableEnded && !socket.destroyed)
+        {
+            socket.write(Gateway.UnauthorizedResponse)
+        }
+        socket.destroy()
+    }
+}
