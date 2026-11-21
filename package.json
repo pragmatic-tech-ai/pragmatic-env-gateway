@@ -19,9 +19,9 @@
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
-    "@pragmatic-tech-ai/pragmatic-component": "^0.17.6",
-    "@pragmatic-tech-ai/pragmatic-env-cluster": "^0.17.6",
-    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.6",
+    "@pragmatic-tech-ai/pragmatic-component": "^0.17.7",
+    "@pragmatic-tech-ai/pragmatic-env-cluster": "^0.17.7",
+    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.7",
     "@pragmatic-tech-ai/pragmatic-protocol": "^0.14.0",
     "redis": "^4",
     "ws": "^8.18.0"
@@ -29,7 +29,7 @@
   "devDependencies": {
     "@opentelemetry/sdk-metrics": "2.12.0",
     "@opentelemetry/sdk-trace-base": "2.12.0",
-    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.6",
+    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.7",
     "@types/node": "^22.20.1",
     "@types/ws": "^8.5.10",
     "tsx": "^4.19.2",
