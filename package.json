@@ -1,0 +1,45 @@
+{
+  "name": "@pragmatic-tech-ai/pragmatic-env-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "The environment gateway (pragmatic-gatewayd): routes clients to the environment server workers through the Redis worker directory.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pragmatic-tech-ai/pragmatic-env-gateway.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tests/tsconfig.json"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@pragmatic-tech-ai/pragmatic-component": "^0.17.2",
+    "@pragmatic-tech-ai/pragmatic-env-cluster": "^0.17.2",
+    "@pragmatic-tech-ai/pragmatic-observability": "^0.17.2",
+    "@pragmatic-tech-ai/pragmatic-protocol": "^0.14.0",
+    "redis": "^4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-trace-base": "2.12.0",
+    "@pragmatic-tech-ai/pragmatic-release-toolkit": "^0.17.2",
+    "@types/node": "^22.20.1",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  },
+  "pragmaticClosureCheck": {
+    "Manifest": "closure.json",
+    "Dockerfile": "Dockerfile",
+    "Apps": [
+      "pragmatic-env-gateway"
+    ]
+  }
+}

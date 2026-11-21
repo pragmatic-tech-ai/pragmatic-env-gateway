@@ -1,0 +1,7 @@
+{
+  "pragmatic-env-gateway": {
+    "entrypoint": ["node", "dist/bin/pragmatic-gatewayd.js"],
+    "packages": [],
+    "files": ["pragmatic-env-gateway/package.json", "pragmatic-env-gateway/node_modules", "pragmatic-env-gateway/dist"]
+  }
+}
