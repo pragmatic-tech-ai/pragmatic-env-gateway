@@ -9,6 +9,12 @@ Split out of `pragmatic-server` (dev-kit A3, roadmap 1.3) from `pragmatic-server
 environment server (configuration loader, cluster keys, machine TLS, health, rate limiting, audit sinks, observability,
 drain, `HostBootstrap`, the worker routing seam) comes from `@pragmatic-tech-ai/pragmatic-env-cluster`.
 
+## Configuration
+
+The gateway reads `PRAGMATIC_*` variables (`ServerConfigLoader.LoadGateway`, declared in
+`src/bin/env-gateway-component.ts`). At start the mounted `pragmatic-config-pragmatic-env-gateway` (the tenant admin
+console's applied configuration) is laid over them; one the gateway cannot start with exits 78 with the reason.
+
 ## Build and test
 
 Packages come from GitHub Packages (`.npmrc`, token in `NODE_AUTH_TOKEN`).

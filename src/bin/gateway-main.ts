@@ -3,6 +3,8 @@ import { Gateway } from '../cluster/gateway.js'
 import { RedisWorkerRouter } from '../cluster/redis-worker-router.js'
 import { StructuredLogger, type ILogger } from '@pragmatic-tech-ai/pragmatic-observability'
 import { GatewayBootstrap } from './gateway-bootstrap.js'
+import { ComponentStartConfiguration } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
+import { EnvGatewayComponent } from './env-gateway-component.js'
 
 class GatewayMain
 {
@@ -27,6 +29,8 @@ class GatewayMain
 
     public static async Run(): Promise<void>
     {
+        // First of all: the applied configuration (the mounted pragmatic-config-pragmatic-env-gateway) over the environment.
+        await ComponentStartConfiguration.ApplyOrExit({ Declaration: EnvGatewayComponent.Declaration, Env: process.env })
         const logger = StructuredLogger.ToStdout()
         const gw = ServerConfigLoader.LoadGateway(process.env)
         const observabilityOptions = HostBootstrap.ObservabilityOptions(gw, ObservabilityRole.Gateway)

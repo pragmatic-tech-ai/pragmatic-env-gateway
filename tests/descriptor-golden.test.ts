@@ -8,13 +8,13 @@ import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { Components } from '../src/release-components.js'
 
 /**
- * The descriptor this repository's image carries is the one pragmatic-server released: the digest pragmatic-server pins
- * (its env-gateway component test and the consoles' vendored `admin/control-plane/descriptors/digests.json`), and the
- * vendored canonical bytes (`fixtures/pragmatic-env-gateway.json`, copied from pragmatic-server@2a2e8138).
+ * The descriptor this repository's image carries, pinned: its digest (the same pin as the component test) and its
+ * canonical bytes (`fixtures/pragmatic-env-gateway.json`). Both move with the declaration and the package version, which
+ * the platform release binds.
  */
 class DescriptorGoldenFixture
 {
-    public static readonly PinnedDigest = 'sha256:027f1f68e9b00164131f0aae8012b1ca6c926f94f6adbae331bf2f0b539e1ebe'
+    public static readonly PinnedDigest = 'sha256:0f481208b106ecab05634c384ea395c792686feb306d636c3dd4a16ccf54f5ea'
     private static readonly Here = dirname(fileURLToPath(import.meta.url))
     private static readonly Vendored = join(DescriptorGoldenFixture.Here, 'fixtures', 'pragmatic-env-gateway.json')
     private static readonly Manifest = join(DescriptorGoldenFixture.Here, '..', 'package.json')
@@ -43,12 +43,12 @@ class DescriptorGoldenFixture
 
 describe('the release descriptor (dist/release-components.js)', () =>
 {
-    it('has exactly the pragmatic-server golden digest', () =>
+    it('has exactly the pinned digest', () =>
     {
         assert.equal(Components.Of(ReleaseApp.EnvGateway).ContentDigest(), DescriptorGoldenFixture.PinnedDigest)
     })
 
-    it('is byte for byte the descriptor pragmatic-server vendored', () =>
+    it('is byte for byte the pinned descriptor', () =>
     {
         const text = DescriptorGoldenFixture.VendoredText()
         assert.equal(DescriptorGoldenFixture.DigestOf(text), DescriptorGoldenFixture.PinnedDigest)

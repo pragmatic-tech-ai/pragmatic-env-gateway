@@ -10,7 +10,7 @@ class EnvGatewayComponentFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly Golden = join(EnvGatewayComponentFixture.Here, 'fixtures', 'pragmatic-env-gateway.component.json')
-    public static readonly Digest = 'sha256:027f1f68e9b00164131f0aae8012b1ca6c926f94f6adbae331bf2f0b539e1ebe'
+    public static readonly Digest = 'sha256:0f481208b106ecab05634c384ea395c792686feb306d636c3dd4a16ccf54f5ea'
     public static readonly Readers = [ComponentSources.InPackage('@pragmatic-tech-ai/pragmatic-env-cluster', 'config', 'server-config-loader.js')]
 }
 

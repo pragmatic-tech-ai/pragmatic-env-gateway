@@ -9,9 +9,10 @@ export class EnvGatewayComponent
 {
     public static readonly Name = 'pragmatic-env-gateway'
     /** The descriptor version: this application's package version (the release test pins it to package.json). */
-    public static readonly Version = '0.1.0'
+    public static readonly Version = '0.1.1'
 
-    private static readonly Declaration: ComponentDeclaration = {
+    /** The declaration: the descriptor, and the variable the start step overlays each configured setting onto. */
+    public static readonly Declaration: ComponentDeclaration = {
         name: EnvGatewayComponent.Name,
         version: EnvGatewayComponent.Version,
         options: [
