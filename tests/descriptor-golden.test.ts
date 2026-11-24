@@ -14,7 +14,7 @@ import { Components } from '../src/release-components.js'
  */
 class DescriptorGoldenFixture
 {
-    public static readonly PinnedDigest = 'sha256:0f481208b106ecab05634c384ea395c792686feb306d636c3dd4a16ccf54f5ea'
+    public static readonly PinnedDigest = 'sha256:a3626eeb9e6eb0238a585bc1513b718cfce0216335fcb5bf6a0165997d93257e'
     private static readonly Here = dirname(fileURLToPath(import.meta.url))
     private static readonly Vendored = join(DescriptorGoldenFixture.Here, 'fixtures', 'pragmatic-env-gateway.json')
     private static readonly Manifest = join(DescriptorGoldenFixture.Here, '..', 'package.json')

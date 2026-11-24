@@ -1,42 +1,12 @@
 {
   "schema": 1,
   "component": "pragmatic-env-gateway",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "options": [
     {
       "name": "core",
-      "description": "The gateway process: listener, worker directory and drain (the gateway also requires the tls option).",
+      "description": "The gateway process: how long shutdown drains.",
       "settings": [
-        {
-          "name": "host",
-          "type": "string",
-          "required": false,
-          "secret": false,
-          "default": "0.0.0.0",
-          "description": "PRAGMATIC_HOST: Address the listener binds."
-        },
-        {
-          "name": "port",
-          "type": "integer",
-          "required": false,
-          "secret": false,
-          "default": 8080,
-          "description": "PRAGMATIC_PORT: Port the listener binds."
-        },
-        {
-          "name": "redisUrl",
-          "type": "url",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_REDIS_URL: The Redis URL of the worker directory."
-        },
-        {
-          "name": "workerServerName",
-          "type": "string",
-          "required": false,
-          "secret": false,
-          "description": "PRAGMATIC_WORKER_SERVERNAME: TLS server name of the workers."
-        },
         {
           "name": "drainTimeoutMs",
           "type": "integer",
@@ -44,67 +14,6 @@
           "secret": false,
           "default": 25000,
           "description": "PRAGMATIC_DRAIN_TIMEOUT_MS: How long shutdown waits for connections to drain, in milliseconds."
-        },
-        {
-          "name": "healthPort",
-          "type": "integer",
-          "required": false,
-          "secret": false,
-          "description": "PRAGMATIC_HEALTH_PORT: Separate port for /healthz and /readyz (served on the main listener when unset)."
-        }
-      ]
-    },
-    {
-      "name": "tls",
-      "description": "Mutual TLS between the gateway and the workers (the server side).",
-      "settings": [
-        {
-          "name": "certificateFile",
-          "type": "string",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_TLS_CERT_FILE: Path of the PEM certificate this process presents."
-        },
-        {
-          "name": "privateKey",
-          "type": "string",
-          "required": true,
-          "secret": true,
-          "description": "PRAGMATIC_TLS_KEY_FILE: The PEM private key of that certificate (a mounted secret file)."
-        },
-        {
-          "name": "caFile",
-          "type": "string",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_TLS_CA_FILE: Path of the PEM CA bundle peers are verified against."
-        }
-      ]
-    },
-    {
-      "name": "clientTls",
-      "description": "The client certificate this process presents when it connects to another cluster member.",
-      "settings": [
-        {
-          "name": "certificateFile",
-          "type": "string",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_CLIENT_TLS_CERT_FILE: Path of the PEM client certificate."
-        },
-        {
-          "name": "privateKey",
-          "type": "string",
-          "required": true,
-          "secret": true,
-          "description": "PRAGMATIC_CLIENT_TLS_KEY_FILE: The PEM private key of the client certificate (a mounted secret file)."
-        },
-        {
-          "name": "caFile",
-          "type": "string",
-          "required": true,
-          "secret": false,
-          "description": "PRAGMATIC_CLIENT_TLS_CA_FILE: Path of the PEM CA bundle the server is verified against."
         }
       ]
     },
@@ -118,13 +27,6 @@
           "required": false,
           "secret": false,
           "description": "PRAGMATIC_SERVICE_NAME: The service name reported with metrics and traces."
-        },
-        {
-          "name": "metricsPort",
-          "type": "integer",
-          "required": false,
-          "secret": false,
-          "description": "PRAGMATIC_METRICS_PORT: Port of the Prometheus metrics listener (off when unset)."
         },
         {
           "name": "otlpEndpoint",
@@ -154,26 +56,6 @@
           "required": false,
           "secret": false,
           "description": "PRAGMATIC_TRACE_SAMPLING: Trace sampling ratio between 0 and 1."
-        }
-      ]
-    },
-    {
-      "name": "audit",
-      "description": "Where access audit records go.",
-      "settings": [
-        {
-          "name": "sink",
-          "type": "string",
-          "required": false,
-          "secret": false,
-          "description": "PRAGMATIC_AUDIT_SINK: none or file (the gateway has no SQL audit store)."
-        },
-        {
-          "name": "file",
-          "type": "string",
-          "required": false,
-          "secret": false,
-          "description": "PRAGMATIC_AUDIT_FILE: The audit file (required for sink file)."
         }
       ]
     },
